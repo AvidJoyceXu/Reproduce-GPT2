@@ -48,8 +48,8 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         # Attention
-        att = torch.einsum('bhqd, bhkd -> bhqk', q, k) * (1/torch.sqrt(k.size(-1))) # (B, nh, T, T)
-        att = att.masked_fill(self.bias[:, :, :T, :T]==0, float['-inf']) # Queries should not access keys after them
+        att = torch.einsum('bhqd, bhkd -> bhqk', q, k) * (1/torch.sqrt(k).size(-1)) # (B, nh, T, T)
+        att = att.masked_fill(self.bias[:, :, :T, :T]==0, float('-inf')) # Queries should not access keys after them
         att = att.softmax(dim=-1) # softmax(-inf) = 0 
         y = att @ v # (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # contiguous for acceleration
@@ -70,3 +70,4 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x)) # Reduce: Attention
         x = x + self.mlp(self.ln_2(x)) # Map: Feed forward
         # Take the residual stream out of the normalization
+        return x

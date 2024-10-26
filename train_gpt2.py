@@ -10,13 +10,34 @@ class GPT(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embed),
-            wpe = nn.Embedding(config.block_size, config.n_embed),
+            wpe = nn.Embedding(config.block_size, config.n_embed), # the num_embedding stands for the maximum unique embeddings it can generate
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embed) # The final layer norm before the classifier head
         ))
 
         self.lm_head = nn.Linear(config.n_embed, config.vocab_size, bias=False) 
         # Regress the embedding to vocabulary (require sigmoid to extract per-class scores)
+
+    def forward(self, idx):
+        '''
+        idx: (B, T)
+        '''
+        B, T = idx.size()
+        assert T <= self.config.block_size, f"Text length {T} exceeds context window size {self.config.block_size}!"
+        # Forward the position and token embeddingsx
+        pos = torch.arange(0, T, device=idx.device)
+        pos_emb = self.transformer.wpe(pos) # (T, config.n_embed)
+        tok_emb = self.transformer.wte(idx) # (B, T, config.n_embed)
+        x = pos_emb + tok_emb
+        # Forward through the transformer
+        for block in self.transformer.h:
+            x = block(x)
+        # Forward the last layer norm
+        x = self.transformer.ln_f(x) # (B, T, config.n_embed)
+        # Forward the regression head
+        x = self.lm_head(x) # (B, T, config.vocab_size)
+        return x
+
 
     @classmethod # Constructor
     def from_pretrained(cls, model_type):
@@ -73,4 +94,45 @@ class GPT(nn.Module):
 
 if __name__ == '__main__':
     model = GPT.from_pretrained('gpt2')
-    print("Success!")
+    model.eval()
+
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+    
+    model.to(device)
+
+    num_return_sequences = 5
+    max_length = 40
+
+    import tiktoken
+
+    enc = tiktoken.get_encoding('gpt2')
+    tokens = enc.encode("Hello, I'm a large language model.")
+    tokens = torch.tensor(tokens)
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # repeat(1, 2, 1): repeat twice on the second dimension, don't repeat on the first or third dimension
+    x = tokens.to(device) # (5, 8)
+
+    torch.manual_seed(42)
+    # The next token problem.
+    while x.size(1) < max_length:
+        with torch.no_grad():
+            logits = model(x) # (B, T, vocab_size)
+            logits = logits[:, -1, :] # Only accept the final token. 
+            # (B, vocab_size)
+            probs = torch.softmax(logits, dim=-1)
+            topk_probs, topk_indices = torch.topk(probs, k=50, dim=-1)
+            # Select a token from the top-k probs
+            ix = torch.multinomial(topk_probs, 1) # (B, 1)
+            xcol = torch.gather(topk_indices, dim=-1, index=ix)
+            x = torch.cat((x, xcol), dim=1) # Concat the newly sampled column to existing x.
+
+    for i in range(num_return_sequences):
+        tokens = x[i, :max_length].tolist() # from tensor to list
+        decoded = enc.decode(tokens)
+        print(">", decoded)
+
+
