@@ -1,5 +1,6 @@
 import torch.nn as nn
-from utils import Block, CausalSelfAttention
+from utils import Block
+# from nanogpt.train_gpt2 import Block
 import torch
 from utils import GPTConfig
 
@@ -9,13 +10,13 @@ class GPT(nn.Module):
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embed),
-            wpe = nn.Embedding(config.block_size, config.n_embed), # the num_embedding stands for the maximum unique embeddings it can generate
+            wte = nn.Embedding(config.vocab_size, config.n_embd),
+            wpe = nn.Embedding(config.block_size, config.n_embd), # the num_embedding stands for the maximum unique embeddings it can generate
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = nn.LayerNorm(config.n_embed) # The final layer norm before the classifier head
+            ln_f = nn.LayerNorm(config.n_embd) # The final layer norm before the classifier head
         ))
 
-        self.lm_head = nn.Linear(config.n_embed, config.vocab_size, bias=False) 
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False) 
         # Regress the embedding to vocabulary (require sigmoid to extract per-class scores)
 
     def forward(self, idx):
@@ -45,19 +46,18 @@ class GPT(nn.Module):
         from transformers import GPT2LMHeadModel
         print("loading weights from pretrained gpt: %s" % model_type)
 
-        # n_layer, n_head and n_embed are determined from model_type
+        # n_layer, n_head and n_embd are determined from model_type
         config_args = {
-            'gpt2':         dict(n_layer=12, n_head=12, n_embed=768),  # 124M params
-            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embed=1024), # 350M params
-            'gpt2-large':   dict(n_layer=36, n_head=20, n_embed=1280), # 774M params
-            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embed=1600), # 1558M params
+            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
+            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024), # 350M params
+            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280), # 774M params
+            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
         }[model_type]
 
         print("forcing vocab_size=50257, block_size=1024, bias=True")
 
         config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
         config_args['block_size'] = 1024 # always 1024 for GPT model checkpoints
-        config_args['bias'] = True # always True for GPT model checkpoints
         
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
@@ -106,13 +106,13 @@ if __name__ == '__main__':
     model.to(device)
 
     num_return_sequences = 5
-    max_length = 40
+    max_length = 30
 
     import tiktoken
 
     enc = tiktoken.get_encoding('gpt2')
-    tokens = enc.encode("Hello, I'm a large language model.")
-    tokens = torch.tensor(tokens)
+    tokens = enc.encode("Hello, I'm a language model,")
+    tokens = torch.tensor(tokens, dtype=torch.long)
     tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # repeat(1, 2, 1): repeat twice on the second dimension, don't repeat on the first or third dimension
     x = tokens.to(device) # (5, 8)
 
