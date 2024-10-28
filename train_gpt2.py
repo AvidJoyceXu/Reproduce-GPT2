@@ -1,8 +1,14 @@
 import torch.nn as nn
-from utils import Block
+from sys import path
+path.append('.')
+path.append('./pretrain')
+
+from pretrain.model_utils import Block
 # from nanogpt.train_gpt2 import Block
 import torch
-from utils import GPTConfig
+from pretrain.model_utils import GPTConfig
+import torch.nn.functional as F
+from dataloader import DataLoaderLite
 
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -19,9 +25,10 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False) 
         # Regress the embedding to vocabulary (require sigmoid to extract per-class scores)
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         '''
         idx: (B, T)
+        targets: (B, T)
         '''
         B, T = idx.size()
         assert T <= self.config.block_size, f"Text length {T} exceeds context window size {self.config.block_size}!"
@@ -37,7 +44,11 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x) # (B, T, config.n_embed)
         # Forward the regression head
         x = self.lm_head(x) # (B, T, config.vocab_size)
-        return x
+        loss = None
+        
+        if targets is not None:
+            loss = F.cross_entropy(x.view(-1, self.config.vocab_size), targets.view(-1)) # targets => (B*T)
+        return x, loss
 
 
     @classmethod # Constructor
@@ -93,7 +104,8 @@ class GPT(nn.Module):
         return model
 
 if __name__ == '__main__':
-    model = GPT.from_pretrained('gpt2')
+    # model = GPT.from_pretrained('gpt2')
+    model = GPT(GPTConfig())
     model.eval()
 
     if torch.backends.mps.is_available():
@@ -108,31 +120,42 @@ if __name__ == '__main__':
     num_return_sequences = 5
     max_length = 30
 
-    import tiktoken
 
-    enc = tiktoken.get_encoding('gpt2')
-    tokens = enc.encode("Hello, I'm a language model,")
-    tokens = torch.tensor(tokens, dtype=torch.long)
-    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # repeat(1, 2, 1): repeat twice on the second dimension, don't repeat on the first or third dimension
-    x = tokens.to(device) # (5, 8)
+    # enc = tiktoken.get_encoding('gpt2')
+    # tokens = enc.encode("Hello, I'm a language model,")
+    # tokens = torch.tensor(tokens, dtype=torch.long)
+    # tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # repeat(1, 2, 1): repeat twice on the second dimension, don't repeat on the first or third dimension
+    # x = tokens.to(device) # (5, 8)
 
-    torch.manual_seed(42)
-    # The next token problem.
-    while x.size(1) < max_length:
-        with torch.no_grad():
-            logits = model(x) # (B, T, vocab_size)
-            logits = logits[:, -1, :] # Only accept the final token. 
-            # (B, vocab_size)
-            probs = torch.softmax(logits, dim=-1)
-            topk_probs, topk_indices = torch.topk(probs, k=50, dim=-1)
-            # Select a token from the top-k probs
-            ix = torch.multinomial(topk_probs, 1) # (B, 1)
-            xcol = torch.gather(topk_indices, dim=-1, index=ix)
-            x = torch.cat((x, xcol), dim=1) # Concat the newly sampled column to existing x.
+    # torch.manual_seed(42)
+    # # The next token problem.
+    # while x.size(1) < max_length:
+    #     with torch.no_grad():
+    #         logits = model(x) # (B, T, vocab_size)
+    #         logits = logits[:, -1, :] # Only accept the final token. 
+    #         # (B, vocab_size)
+    #         probs = torch.softmax(logits, dim=-1)
+    #         topk_probs, topk_indices = torch.topk(probs, k=50, dim=-1)
+    #         # Select a token from the top-k probs
+    #         ix = torch.multinomial(topk_probs, 1) # (B, 1)
+    #         xcol = torch.gather(topk_indices, dim=-1, index=ix)
+    #         x = torch.cat((x, xcol), dim=1) # Concat the newly sampled column to existing x.
 
-    for i in range(num_return_sequences):
-        tokens = x[i, :max_length].tolist() # from tensor to list
-        decoded = enc.decode(tokens)
-        print(">", decoded)
-
+    # for i in range(num_return_sequences):
+    #     tokens = x[i, :max_length].tolist() # from tensor to list
+    #     decoded = enc.decode(tokens)
+    #     print(">", decoded)
+    
+    train_loader = DataLoaderLite(4, 32)
+    
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
+    for i in range(50):
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        logits, loss = model(x, y)
+        loss.backward()
+        optimizer.step()
+        print(f"step {i}, loss: {loss.item()}")
 
