@@ -115,10 +115,12 @@ if __name__ == '__main__':
     else:
         device = torch.device('cpu')
     
+    model = torch.compile(model)
+
     model.to(device)
 
-    num_return_sequences = 5
-    max_length = 30
+    # num_return_sequences = 5
+    # max_length = 50
 
 
     # enc = tiktoken.get_encoding('gpt2')
