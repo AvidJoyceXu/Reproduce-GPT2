@@ -4,7 +4,6 @@ path.append('.')
 path.append('./pretrain')
 
 from pretrain.model_utils import Block
-# from nanogpt.train_gpt2 import Block
 import torch
 from pretrain.model_utils import GPTConfig
 import torch.nn.functional as F
