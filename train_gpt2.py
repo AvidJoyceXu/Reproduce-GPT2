@@ -8,6 +8,7 @@ import torch
 from pretrain.model_utils import GPTConfig
 import torch.nn.functional as F
 from dataloader import DataLoaderLite
+import time
 
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -145,16 +146,30 @@ if __name__ == '__main__':
     #     decoded = enc.decode(tokens)
     #     print(">", decoded)
     
-    train_loader = DataLoaderLite(4, 32)
+    train_loader = DataLoaderLite(B=32, T=1024)
     
     
     optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
-    for i in range(50):
+
+    # torch.set_float32_matmul_precision('high')
+    for i in range(5):
+        t0 = time.time()
+
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        logits, loss = model(x, y)
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits, loss = model(x, y)
+
         loss.backward()
         optimizer.step()
-        print(f"step {i}, loss: {loss.item()}")
+
+        torch.cuda.synchronize()
+        t1 = time.time()
+
+        dt = (t1-t0)*1000 # time diff in miliseconds
+        throughput = (train_loader.B * train_loader.T) / (t1-t0)
+
+        print(f"step {i}, loss: {loss.item()}, dt:{dt:.2f}ms, throughput:{throughput} toks/sec")
 
