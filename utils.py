@@ -52,14 +52,14 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         # Attention
         ### FlashAttention ###
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        # with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+        #     y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         ### FlashAttention ###
 
-        # att = torch.einsum('bhqd, bhkd -> bhqk', q, k) * (1/math.sqrt(k.size(-1))) # (B, nh, T, T)
-        # att = att.masked_fill(self.bias[:, :, :T, :T]==0, float('-inf')) # Queries should not access keys after them
-        # att = att.softmax(dim=-1) # softmax(-inf) = 0 
-        # y = att @ v # (B, nh, T, hs)
+        att = torch.einsum('bhqd, bhkd -> bhqk', q, k) * (1/math.sqrt(k.size(-1))) # (B, nh, T, T)
+        att = att.masked_fill(self.bias[:, :, :T, :T]==0, float('-inf')) # Queries should not access keys after them
+        att = att.softmax(dim=-1) # softmax(-inf) = 0 
+        y = att @ v # (B, nh, T, hs)
 
         # Rearrangement
         y = y.transpose(1, 2).contiguous().view(B, T, C) # contiguous for acceleration

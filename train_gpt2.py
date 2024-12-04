@@ -105,7 +105,7 @@ class GPT(nn.Module):
 
 if __name__ == '__main__':
     # model = GPT.from_pretrained('gpt2')
-    model = GPT(GPTConfig())
+    model = GPT(GPTConfig(vocab_size=50304))
     model.eval()
 
     if torch.backends.mps.is_available():
@@ -154,7 +154,7 @@ if __name__ == '__main__':
     optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
 
     # torch.set_float32_matmul_precision('high')
-    for i in range(5):
+    for i in range(50):
         t0 = time.time()
 
         x, y = train_loader.next_batch()
