@@ -11,6 +11,10 @@ from dataloader import DataLoaderLite
 import time
 import inspect
 import math
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from torch.distributed import init_process_group, destroy_process_group
+import os
 
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -129,9 +133,7 @@ class GPT(nn.Module):
 
 if __name__ == '__main__':
     # model = GPT.from_pretrained('gpt2')
-    model = GPT(GPTConfig(vocab_size=50304))
-    model.eval()
-
+    ### Device detection
     if torch.backends.mps.is_available():
         device_type = 'mps'
     elif torch.cuda.is_available():
@@ -139,6 +141,27 @@ if __name__ == '__main__':
     else:
         device_type = 'cpu'
     device = torch.device(device_type)
+
+    ### Setup DDP ###
+    ddp = int(os.environ.get('RANK', -1)) != -1
+    if ddp:
+        assert device_type == 'cuda'
+        init_process_group(backend='nccl')
+        ddp_rank = int(os.environ['RANK'])
+        ddp_local_rank = int(os.environ['LOCAL_RANK'])
+        ddp_world_size = int(os.environ['WORLD_SIZE'])
+        device = f'cuda:{ddp_local_rank}'
+        torch.cuda.set_device(device)
+        master_process: bool = ddp_rank == 0
+    else:
+        # Vanilla, non-ddp run
+        ddp_rank = 0
+        ddp_local_rank = 0
+        ddp_world_size = 1
+        master_process = True
+
+    model = GPT(GPTConfig(vocab_size=50304))
+    model.eval()
     
     model = torch.compile(model)
 
@@ -176,10 +199,17 @@ if __name__ == '__main__':
     total_tokens_for_batch = 524288 # 2**19, ~0.5M in GPT-3 paper
     B = 16 # micro batch size
     T = 1024
-    grad_accum_steps = total_tokens_for_batch // (B * T)
-    print(f"Total token for one batch: {total_tokens_for_batch}, get {grad_accum_steps} grad accum steps")
 
-    train_loader = DataLoaderLite(B=B, T=T)
+    if ddp:
+        model = DDP(model, device_ids=[ddp_local_rank])
+    raw_model = model.module if ddp else model
+
+    grad_accum_steps = total_tokens_for_batch // (B * T * ddp_world_size)
+    
+    if master_process:
+        print(f"Total token for one batch: {total_tokens_for_batch}, get {grad_accum_steps} grad accum steps")
+
+    train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
     
     max_lr = 6e-4
     min_lr = max_lr * 0.1
@@ -200,7 +230,7 @@ if __name__ == '__main__':
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
         return min_lr + coeff * (max_lr - min_lr)
         
-    optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)
+    optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)
 
     for step in range(max_steps):
         t0 = time.time()
@@ -209,12 +239,19 @@ if __name__ == '__main__':
         for micro_step in range(grad_accum_steps):
             x, y = train_loader.next_batch()
             x, y = x.to(device), y.to(device)
+
+            if ddp: # Not sync gradient until the final micro_step (sync only when update model parameters)
+                model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
+
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits, loss = model(x, y)
+
             loss /= grad_accum_steps # scale the loss to account for accumulated gradient for greater batchsize
             loss_accum += loss.detach()
             loss.backward()
         
+        if ddp:
+            dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG) # Manually call dist.all_reduce to sync
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
         lr = get_lr(step)
@@ -227,7 +264,11 @@ if __name__ == '__main__':
         t1 = time.time()
 
         dt = (t1-t0)*1000 # time diff in miliseconds
-        throughput = (train_loader.B * train_loader.T * grad_accum_steps) / (t1-t0)
+        throughput = (train_loader.B * train_loader.T * grad_accum_steps * ddp_world_size) / (t1-t0)
 
-        print(f"step {step}, lr: {lr:.4e}, loss: {loss_accum.item()}, dt:{dt:.2f}ms, norm: {norm:.4f}, throughput:{throughput} toks/sec")
+        if master_process:
+            print(f"step {step}, lr: {lr:.4e}, loss: {loss_accum.item()}, dt:{dt:.2f}ms, norm: {norm:.4f}, throughput:{throughput} toks/sec")
 
+
+    if ddp:
+        destroy_process_group()
