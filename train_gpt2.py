@@ -209,7 +209,7 @@ if __name__ == '__main__':
     if master_process:
         print(f"Total token for one batch: {total_tokens_for_batch}, get {grad_accum_steps} grad accum steps")
 
-    train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
+    train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, master_process=master_process)
     
     max_lr = 6e-4
     min_lr = max_lr * 0.1
